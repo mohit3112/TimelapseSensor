@@ -1,0 +1,6 @@
+
+description: max301021 proximity sensor
+
+compatible: "maxim,max301021"
+
+include: i2c-device.yaml

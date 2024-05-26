@@ -1,0 +1,16 @@
+# MAX30102 custom driver options 
+
+menuconfig MAX30102_DRIVER
+	bool "MAX30102 driver using I2C"
+	depends on I2C
+
+if MAX30102_DRIVER
+
+source "subsys/logging/Kconfig.template.log_config"
+config DRIVER_INIT_PRIORITY
+	int "Init priority"
+	default 61
+	help
+	  Custom device driver initialization priority, needs be more higher than CONFIG_I2C_INIT_PRIORITY.
+
+endif
