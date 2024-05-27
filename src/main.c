@@ -15,6 +15,7 @@
 #include "GenericCentralApp.h"
 #include "scs_client.h"
 #include "iir_filter.h"
+#include "max30102_driver_i2c.h"
 
 #define I2C1_NODE DT_NODELABEL(max30102)
 #define SENSOR_NODE DT_NODELABEL(max301021)
@@ -24,12 +25,11 @@
 
 LOG_MODULE_REGISTER(Main, LOG_LEVEL_DBG);
 
-static const struct i2c_dt_spec bambu_timelapse_sensor_i2c = I2C_DT_SPEC_GET(I2C1_NODE);
 static const struct gpio_dt_spec led_red = GPIO_DT_SPEC_GET(LED0_NODE, gpios);
 static const struct gpio_dt_spec led_green = GPIO_DT_SPEC_GET(LED1_NODE, gpios);
 static const struct gpio_dt_spec led_blue = GPIO_DT_SPEC_GET(LED2_NONE, gpios);
-const struct device *const dev = DEVICE_DT_GET(DT_CHOSEN(zephyr_console));
-const struct device *proximity_dev = DEVICE_DT_GET(SENSOR_NODE);
+const struct device *const console_dev = DEVICE_DT_GET(DT_CHOSEN(zephyr_console));
+const struct device *max30102_dev = DEVICE_DT_GET(SENSOR_NODE);
 
 static struct bt_scs_client scs_client;
 
@@ -88,62 +88,6 @@ uint8_t sensor_status;
 static iir_filter_data_t *filt;
 
 void mainloop(int err);
-void setup_bambutimelapse_sensor(uint8_t mode, uint8_t ledPulseAmplitude);
-int init_bambutimelapse_sensor(void)
-{
-        uint8_t data;
-        int ret;
-        uint8_t ic_id_address = 0xFF;
-        if (!device_is_ready(bambu_timelapse_sensor_i2c.bus))
-        {
-                printk("I2C bus not ready !\n\r ");
-        }
-        else
-        {
-                ret = i2c_write_read_dt(&bambu_timelapse_sensor_i2c, &ic_id_address, 1, &data, 1);
-                if (ret != 0)
-                {
-
-                        printk("can't read %d\n\r", ret);
-                }
-                else
-                {
-                        printk("data %d\n\r", data);
-                        setup_bambutimelapse_sensor(7, 30);
-                }
-        }
-
-        return ret;
-}
-void setup_bambutimelapse_sensor(uint8_t mode, uint8_t ledPulseAmplitude)
-{
-        uint8_t data_value[2];
-        data_value[0] = 0x09;
-        data_value[1] = mode;
-        i2c_write_dt(&bambu_timelapse_sensor_i2c, &data_value[0], 2);
-        data_value[0] = 0x0c;
-        data_value[1] = ledPulseAmplitude;
-        i2c_write_dt(&bambu_timelapse_sensor_i2c, &data_value[0], 2);
-
-        if (mode == 7)
-        {
-                data_value[0] = 0x11;
-                data_value[1] = 0x01;
-                i2c_write_dt(&bambu_timelapse_sensor_i2c, &data_value[0], 2);
-        }
-}
-
-float read_bambautimelapse_sensor_data(void)
-{
-        uint8_t data_addr, data_value[3];
-        uint32_t proximity;
-        float filter_proximity;
-        data_addr = 0x07;
-        i2c_write_read_dt(&bambu_timelapse_sensor_i2c, &data_addr, 1, &data_value[0], 3);
-        proximity = data_value[2] | (data_value[1] << 8) | (data_value[0] << 16);
-        filter_proximity = iir_filter(filt, proximity);
-        return filter_proximity;
-}
 
 static void camera_ready(void)
 {
@@ -181,8 +125,8 @@ static uint8_t camera_status_received(struct bt_scs_client *scs,
 	ARG_UNUSED(scs);
         uint8_t status[]= {0x02,0x3f,0x20};
         uint8_t cmd[2];
-
-        if (memcmp(data,status, len) == 0)
+        //TODO: Proper state machine to serialize the gatt trigger 
+        if (memcmp(data,status, len) == 0 && trigger_status == TRIGGER_STATUS_ACTIVE)
         {
                 cmd[0] = 0x01;
 	        cmd[1] = 0x09;
@@ -190,7 +134,7 @@ static uint8_t camera_status_received(struct bt_scs_client *scs,
         }
         status[1] = 0xa0;
         status[2] = 0x20; 
-        if(memcmp(data,status,len) == 0)
+        if(memcmp(data,status,len) == 0 && trigger_status == TRIGGER_STATUS_ACTIVE)
         {
 
                 cmd[0] = 0x01;
@@ -199,7 +143,7 @@ static uint8_t camera_status_received(struct bt_scs_client *scs,
         }
         status[1] = 0xa0;
         status[2] = 0x00;
-        if(memcmp(data,status,len) == 0)
+        if(memcmp(data,status,len) == 0 && trigger_status == TRIGGER_STATUS_ACTIVE)
         {
                 cmd[0] = 0x01;
 	        cmd[1] = 0x06;
@@ -236,8 +180,7 @@ const scan_context_t scan_context = {
 void reset_to_uf2(void) {
   printk("resetting .. \n");      
   NRF_POWER->GPREGRET = 0x57; // 0xA8 OTA, 0x4e Serial
- // NVIC_SystemReset();         // or sd_nvic_SystemReset();
-  sys_reboot(SYS_REBOOT_COLD);
+  sys_reboot(SYS_REBOOT_COLD);  // NVIC_SystemReset(); or sd_nvic_SystemReset();
 }
 
 void mainloop(int err)
@@ -257,7 +200,10 @@ void mainloop(int err)
                 }
                 if (!err)
                 {
-                        proximity = read_bambautimelapse_sensor_data();
+                        //proximity = read_bambautimelapse_sensor_data();
+                        proximity = max30102_read_ir_data(max30102_dev);
+                        proximity = iir_filter(filt, proximity);
+
                         current_time = k_uptime_get_32();
                         if(current_time > calibration_start && current_time < calibration_stop)
                         {
@@ -293,10 +239,11 @@ void mainloop(int err)
                                 
                                 if(proximity > (high_point - 1000) && sensor_status == SENSOR_STATUS_FAR)
                                 {       
-                                        printk("sensor proximity detected\n");
+                                        printk("extruder proximity detected\n");
                                         sensor_status = SENSOR_STATUS_PROXIMITY;
                                         if(trigger_status == TRIGGER_STATUS_READY)
                                         {
+                                                // TODO: if focus fails then the trigger status should be reset with a timeout
                                                 trigger_status = TRIGGER_STATUS_ACTIVE;
                                                 bt_scs_trigger_capture(&scs_client);
                                         }
@@ -304,7 +251,7 @@ void mainloop(int err)
                                 }
                                 if(proximity < (low_point + 1000) && sensor_status == SENSOR_STATUS_PROXIMITY)
                                 {
-                                        printk("sensor far \n");
+                                        printk("extruder far \n");
                                         sensor_status = SENSOR_STATUS_FAR;
                                 }
                         }     
@@ -380,7 +327,7 @@ int main(void)
         int err;
         bt_addr_le_t addr;
 
-        if (!device_is_ready(dev)) 
+        if (!device_is_ready(console_dev)) 
         {
 		return 0;
 	}
@@ -407,14 +354,13 @@ int main(void)
                 gpio_pin_set_dt(&led_red, 0);
                 gpio_pin_set_dt(&led_green,0);
                       
-                /*
                 err = bt_addr_le_from_str("11:22:33:44:55:66","random",&addr);
                 err = bt_id_create(&addr,NULL);
 
-                err = bt_le_adv_start(adv_param, ad, ARRAY_SIZE(ad), sd, ARRAY_SIZE(sd));
+                err = bt_le_adv_start(BT_LE_ADV_NCONN, ad, ARRAY_SIZE(ad), sd, ARRAY_SIZE(sd));
                 printk("Bluetooth Advertising !!\n");
-                */
                 
+                /* TODO: Handle bonding removal , and multiple bonded devices */
                 if (IS_ENABLED(CONFIG_SETTINGS))
                 {
                         settings_load();
@@ -434,13 +380,16 @@ int main(void)
                 filt = iir_filter_create(iir_2_coeff);
                 iir_filter_reset(filt);
 
-                err = init_bambutimelapse_sensor();
+               // err = init_bambutimelapse_sensor();
+               max30102_configure(max30102_dev,7,30);
+
         }
         
-        uart_irq_callback_set(dev, interrupt_handler);
+        uart_irq_callback_set(console_dev, interrupt_handler);
 
 	/* Enable rx interrupts */
-	uart_irq_rx_enable(dev);
+        /* TODO: Gatt server can be used for reception of CMDs from phone */
+	uart_irq_rx_enable(console_dev);
         mainloop(err);
         return 0;
 }
