@@ -23,18 +23,7 @@ This project utilizes an IR proximity sensor to trigger a camera shutter, facili
     ```bash
     git clone https://github.com/mohit3112/TimelapseSensor.git
     ```
-2. Navigate to the project directory:
-    ```bash
-    cd TimelapseSensor
-    ```
-3. Build the project using CMake:
-    ```bash
-    mkdir build
-    cd build
-    cmake ..
-    make
-    ```
-
+    
 ### Usage
 - Attach the sensor module to the camera's X-axis.
 - Ensure the BLE module is properly connected.
