@@ -1,6 +1,4 @@
-Here's an updated README incorporating the additional details you provided:
 
----
 
 # TimelapseSensor
 
