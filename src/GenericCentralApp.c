@@ -262,6 +262,8 @@ static void connected(struct bt_conn *conn, uint8_t conn_err)
 	err = bt_conn_set_security(conn, BT_SECURITY_L2);
 	if (err)
 	{
+		/* If we failed to enable security , start service discovery or else it will start on 
+		   Security changed callback */
 		printk("Failed to set security: %d\n", err);
 		bt_gatt_dm_start(conn, NULL, &discovery_cb, default_conn_context.scs_client);
 	}

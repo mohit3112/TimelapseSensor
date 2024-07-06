@@ -22,6 +22,8 @@
 #define LED0_NODE DT_ALIAS(led0)
 #define LED1_NODE DT_ALIAS(led1)
 #define LED2_NONE DT_ALIAS(led2)
+#define GPIO_BATTERY_READ_ENABLE 14
+#define FOCUS_TIMEOUT K_MSEC(5000)
 
 LOG_MODULE_REGISTER(Main, LOG_LEVEL_DBG);
 
@@ -30,6 +32,9 @@ static const struct gpio_dt_spec led_green = GPIO_DT_SPEC_GET(LED1_NODE, gpios);
 static const struct gpio_dt_spec led_blue = GPIO_DT_SPEC_GET(LED2_NONE, gpios);
 const struct device *const console_dev = DEVICE_DT_GET(DT_CHOSEN(zephyr_console));
 const struct device *max30102_dev = DEVICE_DT_GET(SENSOR_NODE);
+static const struct device *gpio_rdivider_en = DEVICE_DT_GET(DT_NODELABEL(gpio0));
+static struct k_work_delayable scs_timeout;
+static struct k_work_delayable proximity_timeout;
 
 static struct bt_scs_client scs_client;
 
@@ -119,28 +124,46 @@ static void camera_cmd_sent(struct bt_scs_client *scs, uint8_t err,
         }
 }
 
+static void scs_timeout_cb(struct k_work *item)
+{
+        uint8_t cmd[2];
+        printk("Focus Timeout\n");
+        cmd[0] = 0x01;
+	cmd[1] = 0x08;
+	bt_scs_client_send_camera_cmd(&scs_client, cmd,2);
+        trigger_status = TRIGGER_STATUS_READY;
+}
 static uint8_t camera_status_received(struct bt_scs_client *scs,
 						const uint8_t *data, uint16_t len)
 {
 	ARG_UNUSED(scs);
         uint8_t status[]= {0x02,0x3f,0x20};
         uint8_t cmd[2];
+
         //TODO: Proper state machine to serialize the gatt trigger 
         if (memcmp(data,status, len) == 0 && trigger_status == TRIGGER_STATUS_ACTIVE)
         {
                 cmd[0] = 0x01;
 	        cmd[1] = 0x09;
-	        bt_scs_client_send_camera_cmd(&scs_client, cmd,2);
+                bt_scs_client_send_camera_cmd(&scs_client, cmd,2);
         }
+        status[2] = 0x40;
+        if (memcmp(data,status, len) == 0 && trigger_status == TRIGGER_STATUS_ACTIVE)
+        {
+                cmd[0] = 0x01;
+	        cmd[1] = 0x09;
+                bt_scs_client_send_camera_cmd(&scs_client, cmd,2);
+        }
+
         status[1] = 0xa0;
         status[2] = 0x20; 
         if(memcmp(data,status,len) == 0 && trigger_status == TRIGGER_STATUS_ACTIVE)
         {
-
                 cmd[0] = 0x01;
 	        cmd[1] = 0x08;
 	        bt_scs_client_send_camera_cmd(&scs_client, cmd,2);
         }
+
         status[1] = 0xa0;
         status[2] = 0x00;
         if(memcmp(data,status,len) == 0 && trigger_status == TRIGGER_STATUS_ACTIVE)
@@ -149,7 +172,9 @@ static uint8_t camera_status_received(struct bt_scs_client *scs,
 	        cmd[1] = 0x06;
 	        bt_scs_client_send_camera_cmd(&scs_client, cmd,2);
                 trigger_status = TRIGGER_STATUS_READY;
+                k_work_cancel_delayable(&scs_timeout);
         }
+
         LOG_HEXDUMP_INF(data,len,"Received");
 	return BT_GATT_ITER_CONTINUE;
 }
@@ -183,9 +208,17 @@ void reset_to_uf2(void) {
   sys_reboot(SYS_REBOOT_COLD);  // NVIC_SystemReset(); or sd_nvic_SystemReset();
 }
 
+static void proximity_timeout_cb(struct k_work *item)
+{
+       sensor_status = SENSOR_STATUS_FAR;
+       max30102_reset(max30102_dev);
+       k_msleep(10);
+       max30102_configure(max30102_dev,7,20); 
+}
+
 void mainloop(int err)
 {
-        float high_point = 0 , low_point = 100000;
+        float high_point = 0 , low_point = 2000000;
         float proximity;
         uint32_t calibration_start = k_uptime_get_32() + 10000;
         uint32_t calibration_stop = k_uptime_get_32() + 30000;
@@ -194,17 +227,44 @@ void mainloop(int err)
 	
         while (1)
         {
-                if(cmd == 'r')
+                switch (cmd)
                 {
+                case 'r':
                         reset_to_uf2();
+                        break;
+                case 'h':
+                        max30102_reset(max30102_dev);
+                        k_msleep(10);
+                        max30102_configure(max30102_dev,7,20);
+                        calibration_start = k_uptime_get_32()+ 10000;
+                        calibration_stop = k_uptime_get_32() + 20000;
+                        high_point = 0;
+                        low_point = 2000000;
+                        iir_filter_reset(filt);
+                        printk("Resetting, wait for 10s...");
+                        break;
+                case 'l':
+                        max30102_reset(max30102_dev);
+                        k_msleep(10);
+                        max30102_configure(max30102_dev,7,15);
+                        calibration_start = k_uptime_get_32()+ 10000;
+                        calibration_stop = k_uptime_get_32() + 20000;
+                        high_point = 0;
+                        low_point = 2000000;
+                        iir_filter_reset(filt);
+                        printk("Resetting, wait for 10s...");
+                        break;
+                default:
+                        break;
                 }
+                cmd = '\0';
                 if (!err)
                 {
-                        //proximity = read_bambautimelapse_sensor_data();
                         proximity = max30102_read_ir_data(max30102_dev);
                         proximity = iir_filter(filt, proximity);
 
                         current_time = k_uptime_get_32();
+                         
                         if(current_time > calibration_start && current_time < calibration_stop)
                         {
                                 gpio_pin_set_dt(&led_blue,1);
@@ -220,9 +280,11 @@ void mainloop(int err)
                                         low_point = proximity;
                                 }
 
-                               printk(">proximity : %f , high point : %f , low point : %f  \n", proximity,high_point,low_point);
+                                printk(">proximity : %f , high point : %f , low point : %f  trigger: %d,  sensor : %d\n", proximity,high_point,low_point, trigger_status,sensor_status);
                         }   
-                        else if(current_time > calibration_stop && (high_point - low_point > 1000))        
+                        else if(current_time > calibration_stop && 
+                               (((high_point -500) - (low_point+500)) > 500) && 
+                               ((high_point-500) > (low_point+500)))         
                         {      
                                 if(trigger_status == TRIGGER_STATUS_ACTIVE)
                                 {
@@ -237,30 +299,35 @@ void mainloop(int err)
                                         gpio_pin_set_dt(&led_green,0);
                                 }
                                 
-                                if(proximity > (high_point - 1000) && sensor_status == SENSOR_STATUS_FAR)
+                                if(proximity > (high_point - 500) && sensor_status == SENSOR_STATUS_FAR)
                                 {       
                                         printk("extruder proximity detected\n");
                                         sensor_status = SENSOR_STATUS_PROXIMITY;
+                                        k_work_schedule(&proximity_timeout,K_MSEC(10000));
+                                        printk(">proximity : %f , high point : %f , low point : %f  trigger: %d,  sensor : %d\n", proximity,high_point,low_point, trigger_status,sensor_status);
                                         if(trigger_status == TRIGGER_STATUS_READY)
                                         {
-                                                // TODO: if focus fails then the trigger status should be reset with a timeout
                                                 trigger_status = TRIGGER_STATUS_ACTIVE;
+                                                k_work_schedule(&scs_timeout, FOCUS_TIMEOUT);
                                                 bt_scs_trigger_capture(&scs_client);
                                         }
-                                           
                                 }
-                                if(proximity < (low_point + 1000) && sensor_status == SENSOR_STATUS_PROXIMITY)
+                                if(proximity < (low_point + 500) && sensor_status == SENSOR_STATUS_PROXIMITY)
                                 {
+                                        k_work_cancel_delayable(&proximity_timeout);
+                                        printk(">proximity : %f , high point : %f , low point : %f  , trigger: %d,  sensor : %d\n", proximity,high_point,low_point, trigger_status,sensor_status);
                                         printk("extruder far \n");
                                         sensor_status = SENSOR_STATUS_FAR;
                                 }
                         }     
-                        else
+                        else if(current_time > calibration_stop)
                         {
-                            // if calibration failed increase calibration time by 10 s    
+                            // if calibration failed increase calibration time by 10 s 
+                            printk("calibration failed , retrying ..");   
                             calibration_stop =  k_uptime_get_32() + 10000;   
                         }
                 }
+
                 k_msleep(10);
         }
 }
@@ -321,16 +388,32 @@ static void interrupt_handler(const struct device *dev, void *user_data)
 	}
 }
 
+static void list_bonded_devices(const struct bt_bond_info *info, void *user_data)
+{
+        char saddr[BT_ADDR_LE_STR_LEN];
+        bt_addr_le_to_str(&(info->addr), saddr, sizeof(saddr));
+
+        printk("Bound Device found: %s \n", saddr);
+}
 
 int main(void)
 {
         int err;
         bt_addr_le_t addr;
 
+        if(!device_is_ready(gpio_rdivider_en))
+        {
+                return 0;
+        }
+        /*** Very critical for battery charging ***/ 
+        /*** see https://wiki.seeedstudio.com/XIAO_BLE/#q3-what-are-the-considerations-when-using-xiao-nrf52840-sense-for-battery-charging ***/      
+        gpio_pin_configure(gpio_rdivider_en, GPIO_BATTERY_READ_ENABLE, GPIO_OUTPUT|GPIO_ACTIVE_LOW);
+        gpio_pin_set(gpio_rdivider_en, GPIO_BATTERY_READ_ENABLE, 1);
         if (!device_is_ready(console_dev)) 
         {
 		return 0;
 	}
+        /****************************************/       
 
         ring_buf_init(&ringbuf, sizeof(ring_buffer), ring_buffer);
 
@@ -353,19 +436,23 @@ int main(void)
                 gpio_pin_set_dt(&led_blue,0);
                 gpio_pin_set_dt(&led_red, 0);
                 gpio_pin_set_dt(&led_green,0);
-                      
+
+               /*       
                 err = bt_addr_le_from_str("11:22:33:44:55:66","random",&addr);
                 err = bt_id_create(&addr,NULL);
 
                 err = bt_le_adv_start(BT_LE_ADV_NCONN, ad, ARRAY_SIZE(ad), sd, ARRAY_SIZE(sd));
                 printk("Bluetooth Advertising !!\n");
-                
+                */
+
                 /* TODO: Handle bonding removal , and multiple bonded devices */
                 if (IS_ENABLED(CONFIG_SETTINGS))
                 {
                         settings_load();
                 }
                 
+                bt_foreach_bond(BT_ID_DEFAULT, list_bonded_devices, NULL);
+
                 err = bt_scs_client_init(&scs_client, &init);
 
 	        if (err != 0) 
@@ -380,9 +467,7 @@ int main(void)
                 filt = iir_filter_create(iir_2_coeff);
                 iir_filter_reset(filt);
 
-               // err = init_bambutimelapse_sensor();
-               max30102_configure(max30102_dev,7,30);
-
+                max30102_configure(max30102_dev,7,20);
         }
         
         uart_irq_callback_set(console_dev, interrupt_handler);
@@ -390,6 +475,9 @@ int main(void)
 	/* Enable rx interrupts */
         /* TODO: Gatt server can be used for reception of CMDs from phone */
 	uart_irq_rx_enable(console_dev);
+        
+        k_work_init_delayable(&scs_timeout, scs_timeout_cb);
+        k_work_init_delayable(&proximity_timeout, proximity_timeout_cb);
         mainloop(err);
         return 0;
 }

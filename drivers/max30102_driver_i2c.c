@@ -76,6 +76,11 @@ static void sensor_configure(const struct device *dev, uint8_t mode, uint8_t led
     }
 }
 
+static void sensor_reset(const struct device *dev)
+{
+    sensor_write_reg(dev,0x09, 1 << 6);
+}
+
 static int sensor_read_ir_data(const struct device *dev)
 {
     uint8_t data_value[3];
@@ -89,7 +94,8 @@ static const struct max30102_driver_api max30102_api_funcs = {
 	.write_reg  = sensor_write_reg,
 	.read_reg   = sensor_read_reg,
     .configure  = sensor_configure,
-    .read_ir_data = sensor_read_ir_data
+    .read_ir_data = sensor_read_ir_data,
+    .reset = sensor_reset
 };
 
 #define MAX30102_CONFIG_I2C(inst)				\

@@ -13,12 +13,14 @@ typedef int  (*max30102_api_read_reg_t)(const struct device * dev, uint8_t reg, 
 typedef int  (*max30102_api_write_reg_t)(const struct device * dev, uint8_t reg, uint8_t value);
 typedef void  (*max30102_api_configure_t)(const struct device *dev, uint8_t mode , uint8_t led_pulse_amp);
 typedef int  (*max30102_api_read_ir_data_t)(const struct device *dev);
+typedef void (*max30102_api_reset_t)(const struct device *dev);
 
 struct max30102_driver_api {
 	max30102_api_read_reg_t read_reg;
 	max30102_api_write_reg_t write_reg;
 	max30102_api_configure_t configure;
 	max30102_api_read_ir_data_t read_ir_data;
+	max30102_api_reset_t reset;
 };
 
 __syscall   int  max30102_read_reg(const struct device * dev, uint8_t reg, uint8_t *data, int size);
@@ -59,6 +61,16 @@ static inline int z_impl_max30102_read_ir_data(const struct device * dev)
 	__ASSERT(api->read_ir_data, "Callback pointer should not be NULL");
 
 	return api->read_ir_data(dev);
+}
+
+__syscall void max30102_reset(const struct device *dev);
+static inline void z_impl_max30102_reset(const struct device * dev)
+{
+	const struct max30102_driver_api *api = dev->api;
+
+	__ASSERT(api->reset, "Callback pointer should not be NULL");
+
+	return api->reset(dev);
 }
 
 #ifdef __cplusplus

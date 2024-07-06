@@ -201,6 +201,6 @@ void bt_scs_trigger_capture(struct bt_scs_client *scs_c)
 {
 	uint8_t data[2];
 	data[0] = 0x01;
-	data[1] = 0x07;
+	data[1] = 0x09; // 0x7
 	bt_scs_client_send_camera_cmd(scs_c, data,2);
 }
