@@ -3,6 +3,7 @@
 # TimelapseSensor
 
 This project utilizes an IR proximity sensor to trigger a camera shutter, facilitating time-lapse photography. It employs a Xiao BLE module and a MAX30102 IC to detect motion and communicate with a Sony camera over Bluetooth Low Energy (BLE) using the GATT profile.
+
 ![Alt Text](https://github.com/mohit3112/TimelapseSensor/blob/main/timelapse3dprinting.gif)
 
 ## Features
